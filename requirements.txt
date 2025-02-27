@@ -8,3 +8,4 @@ tqdm
 numpy
 huggingface_hub
 weave
+unsloth

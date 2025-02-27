@@ -177,20 +177,39 @@ def arg_parse_update_cfg(default_cfg):
     print(json.dumps(cfg, indent=2))
     return cfg    
 
-def load_pile_lmsys_mixed_tokens():
-    try:
+# def load_pile_lmsys_mixed_tokens():
+#     try:
+#         print("Loading data from disk")
+#         all_tokens = torch.load("data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
+#     except:
+#         print("Data is not cached. Loading data from HF")
+#         data = load_dataset(
+#             "ckkissane/pile-lmsys-mix-1m-tokenized-gemma-2", 
+#             split="train", 
+#             cache_dir="cache/"
+#         )
+#         data.save_to_disk("data/pile-lmsys-mix-1m-tokenized-gemma-2.hf")
+#         data.set_format(type="torch", columns=["input_ids"])
+#         all_tokens = data["input_ids"]
+#         torch.save(all_tokens, "data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
+#         print(f"Saved tokens to disk")
+#     return all_tokens
+
+
+def load_pile_lmsys_mixed_tokens(local_dataset_path, hf_dataset_path=None):
+    if not hf_dataset_path:
         print("Loading data from disk")
-        all_tokens = torch.load("data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
-    except:
+        all_tokens = torch.load(f"{local_dataset_path}.pt")
+    else:
         print("Data is not cached. Loading data from HF")
         data = load_dataset(
-            "ckkissane/pile-lmsys-mix-1m-tokenized-gemma-2", 
+            hf_dataset_path,
             split="train", 
             cache_dir="cache/"
         )
-        data.save_to_disk("data/pile-lmsys-mix-1m-tokenized-gemma-2.hf")
+        data.save_to_disk(f"{local_dataset_path}.hf")
         data.set_format(type="torch", columns=["input_ids"])
         all_tokens = data["input_ids"]
-        torch.save(all_tokens, "data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
+        torch.save(all_tokens, f"{local_dataset_path}.pt")
         print(f"Saved tokens to disk")
     return all_tokens
