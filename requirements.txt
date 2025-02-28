@@ -1,0 +1,11 @@
+plotly
+einops
+datasets
+torch
+transformer_lens
+wandb
+tqdm
+numpy
+huggingface_hub
+weave
+unsloth
