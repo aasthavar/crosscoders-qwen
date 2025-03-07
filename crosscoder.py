@@ -13,7 +13,9 @@ SAVE_DIR = Path("/home/ubuntu/crosscoders-r1-distill-qwen/checkpoints")
 class LossOutput(NamedTuple):
     # loss: torch.Tensor
     l2_loss: torch.Tensor
-    l1_loss: torch.Tensor
+    # l1_loss: torch.Tensor
+    sparsity_loss: torch.Tensor
+    feature_activation_loss: torch.Tensor
     l0_loss: torch.Tensor
     explained_variance: torch.Tensor
     explained_variance_A: torch.Tensor
@@ -31,13 +33,13 @@ class CrossCoder(nn.Module):
         self.W_enc = nn.Parameter(
             torch.empty(2, d_in, d_hidden, dtype=self.dtype)
         )
-        self.W_dec = nn.Parameter(
-            torch.nn.init.normal_(
-                torch.empty(
-                    d_hidden, 2, d_in, dtype=self.dtype
-                )
-            )
-        )
+        # self.W_dec = nn.Parameter(
+        #     torch.nn.init.normal_(
+        #         torch.empty(
+        #             d_hidden, 2, d_in, dtype=self.dtype
+        #         )
+        #     )
+        # )
         self.W_dec = nn.Parameter(
             torch.nn.init.normal_(
                 torch.empty(
@@ -91,14 +93,45 @@ class CrossCoder(nn.Module):
         acts = self.encode(x)
         return self.decode(acts)
 
+    # def get_losses(self, x):
+    #     # x: [batch, n_models, d_model]
+    #     x = x.to(self.dtype)
+    #     acts = self.encode(x)
+    #     # acts: [batch, d_hidden]
+    #     x_reconstruct = self.decode(acts)
+    #     diff = x_reconstruct.float() - x.float()
+    #     squared_diff = diff.pow(2)
+    #     l2_per_batch = einops.reduce(squared_diff, 'batch n_models d_model -> batch', 'sum')
+    #     l2_loss = l2_per_batch.mean()
+
+    #     total_variance = einops.reduce((x - x.mean(0)).pow(2), 'batch n_models d_model -> batch', 'sum')
+    #     explained_variance = 1 - l2_per_batch / total_variance
+
+    #     per_token_l2_loss_A = (x_reconstruct[:, 0, :] - x[:, 0, :]).pow(2).sum(dim=-1).squeeze()
+    #     total_variance_A = (x[:, 0, :] - x[:, 0, :].mean(0)).pow(2).sum(-1).squeeze()
+    #     explained_variance_A = 1 - per_token_l2_loss_A / total_variance_A
+
+    #     per_token_l2_loss_B = (x_reconstruct[:, 1, :] - x[:, 1, :]).pow(2).sum(dim=-1).squeeze()
+    #     total_variance_B = (x[:, 1, :] - x[:, 1, :].mean(0)).pow(2).sum(-1).squeeze()
+    #     explained_variance_B = 1 - per_token_l2_loss_B / total_variance_B
+
+    #     decoder_norms = self.W_dec.norm(dim=-1)
+    #     # decoder_norms: [d_hidden, n_models]
+    #     total_decoder_norm = einops.reduce(decoder_norms, 'd_hidden n_models -> d_hidden', 'sum')
+    #     l1_loss = (acts * total_decoder_norm[None, :]).sum(-1).mean(0)
+
+    #     l0_loss = (acts>0).float().sum(-1).mean()
+
+    #     return LossOutput(l2_loss=l2_loss, l1_loss=l1_loss, l0_loss=l0_loss, explained_variance=explained_variance, explained_variance_A=explained_variance_A, explained_variance_B=explained_variance_B)
+
     def get_losses(self, x):
-        # x: [batch, n_models, d_model]
-        x = x.to(self.dtype)
-        acts = self.encode(x)
-        # acts: [batch, d_hidden]
+        x = x.to(self.dtype)  # x: [batch, n_models, d_model]
+        acts = self.encode(x) # acts: [batch, d_hidden]
         x_reconstruct = self.decode(acts)
+        
         diff = x_reconstruct.float() - x.float()
         squared_diff = diff.pow(2)
+        
         l2_per_batch = einops.reduce(squared_diff, 'batch n_models d_model -> batch', 'sum')
         l2_loss = l2_per_batch.mean()
 
@@ -113,14 +146,48 @@ class CrossCoder(nn.Module):
         total_variance_B = (x[:, 1, :] - x[:, 1, :].mean(0)).pow(2).sum(-1).squeeze()
         explained_variance_B = 1 - per_token_l2_loss_B / total_variance_B
 
-        decoder_norms = self.W_dec.norm(dim=-1)
-        # decoder_norms: [d_hidden, n_models]
-        total_decoder_norm = einops.reduce(decoder_norms, 'd_hidden n_models -> d_hidden', 'sum')
-        l1_loss = (acts * total_decoder_norm[None, :]).sum(-1).mean(0)
+        # Compute decoder norms
+        decoder_norms = self.W_dec.norm(dim=1)  # [d_hidden, n_models]
+        relative_decoder_norms = decoder_norms[:, 1] / decoder_norms.sum(dim=1)
+
+        # Define masks
+        sparse_features = ((relative_decoder_norms < 0.7) & (relative_decoder_norms > 0.3)).nonzero(as_tuple=True)[0]
+        standard_features = ((relative_decoder_norms >= 0.7) | (relative_decoder_norms <= 0.3)).nonzero(as_tuple=True)[0]
+
+        # print(f"sparse_features.shape: {sparse_features.shape}")
+        # print(f"standard_features.shape: {standard_features.shape}")
+        # print(f"acts.shape: {acts.shape}")
+        # print(f"decoder_norms.shape: {decoder_norms.shape}")
+        
+        # Compute sparsity loss (only for sparse features)
+        # sparsity_loss = (acts[:, sparse_features] * decoder_norms[None, sparse_features]).sum(dim=-1).mean()
+        if sparse_features.numel() > 0:
+            sparsity_loss = (acts[:, sparse_features] * decoder_norms[sparse_features][None, :]).sum(-1).mean()
+        else:
+            sparsity_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+
+        # Compute feature activation loss (for standard features)
+        total_decoder_norm = decoder_norms.sum(dim=1)
+        # feature_activation_loss = (acts[:, standard_features] * total_decoder_norm[None, standard_features]).sum(dim=-1).mean()
+
+        if standard_features.numel() == 0:
+            feature_activation_loss = torch.tensor(0.0, device=acts.device)
+        else:
+            total_decoder_norm = decoder_norms.sum(dim=1)
+            feature_activation_loss = (acts[:, standard_features] * total_decoder_norm[standard_features].unsqueeze(0)).sum(dim=-1).mean()
 
         l0_loss = (acts>0).float().sum(-1).mean()
 
-        return LossOutput(l2_loss=l2_loss, l1_loss=l1_loss, l0_loss=l0_loss, explained_variance=explained_variance, explained_variance_A=explained_variance_A, explained_variance_B=explained_variance_B)
+        return LossOutput(
+            l2_loss=l2_loss, 
+            # l1_loss=l1_loss, 
+            sparsity_loss=sparsity_loss,
+            feature_activation_loss=feature_activation_loss,
+            l0_loss=l0_loss, 
+            explained_variance=explained_variance, 
+            explained_variance_A=explained_variance_A, 
+            explained_variance_B=explained_variance_B
+        )
 
     def create_save_dir(self):
         version_list = [

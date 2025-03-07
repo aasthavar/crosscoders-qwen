@@ -35,15 +35,23 @@ class Trainer:
 
     def get_l1_coeff(self):
         # Linearly increases from 0 to cfg["l1_coeff"] over the first 0.05 * self.total_steps steps, then keeps it constant
+        
         if self.step_counter < 0.05 * self.total_steps:
-            return self.cfg["l1_coeff"] * self.step_counter / (0.05 * self.total_steps)
+            lambda_f = self.cfg["l1_coeff"] * self.step_counter / (0.05 * self.total_steps)
         else:
-            return self.cfg["l1_coeff"]
+            lambda_f = self.cfg["l1_coeff"]
+        
+        lambda_s = self.cfg["lambda_ratio"] * lambda_f
+        return lambda_s, lambda_f
 
     def step(self):
         acts = self.buffer.next()
         losses = self.crosscoder.get_losses(acts)
-        loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
+        # loss = losses.l2_loss + self.get_l1_coeff() * losses.l1_loss
+        
+        lambda_s, lambda_f = self.get_l1_coeff()
+        loss = losses.l2_loss + lambda_s * losses.sparsity_loss + lambda_f*  losses.feature_activation_loss
+        
         loss.backward()
         clip_grad_norm_(self.crosscoder.parameters(), max_norm=1.0)
         self.optimizer.step()
@@ -53,7 +61,9 @@ class Trainer:
         loss_dict = {
             "loss": loss.item(),
             "l2_loss": losses.l2_loss.item(),
-            "l1_loss": losses.l1_loss.item(),
+            "sparsity_loss": losses.sparsity_loss.item(),
+            "feature_activation_loss": losses.feature_activation_loss.item(),
+            # "l1_loss": losses.l1_loss.item(),
             "l0_loss": losses.l0_loss.item(),
             "l1_coeff": self.get_l1_coeff(),
             "lr": self.scheduler.get_last_lr()[0],
